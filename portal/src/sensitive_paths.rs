@@ -1,6 +1,6 @@
 //! Shared secret-path policy for file tools and both OS shell sandboxes.
 pub(crate) const SECRET_NAMES: &[&str] = &[
-    ".ssh", ".aws", ".azure", ".gnupg", ".portal-client.json", "connection.json", "auth.json",
+    ".ssh", ".aws", ".azure", ".gnupg", ".portal-client.json", "connection.json", "connection.json.tmp", "auth.json",
 ];
 
 pub(crate) fn is_secret_name(name: &str) -> bool {

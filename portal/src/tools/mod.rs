@@ -666,16 +666,27 @@ impl ToolHost {
             "portal_web_fetch" => anyhow::ensure!(self.config.tools.web_fetch, "Web fetch is disabled"),
             _ => {},
         }
-        let plan = security::plan(&self.config, tool_name, &arguments)?;
+        // Snapshot the policy before planning. An open approval keeps its exact
+        // scope, even if Desktop changes the policy while the user is deciding.
+        let mut invocation_config = self.config.clone();
+        let mut live_permission_mode = false;
+        if invocation_config.security.permission_mode == crate::config::PermissionMode::Supervised {
+            if let Some(mode) = self.client_handler.live_permission_mode().await {
+                invocation_config.security.permission_mode = mode;
+                live_permission_mode = true;
+            }
+        }
+        let plan = security::plan(&invocation_config, tool_name, &arguments)?;
         let decision = &plan.decision;
-        info!(tool = tool_name, decision = ?decision, "tool authorization");
+        info!(tool = tool_name, mode = ?invocation_config.security.permission_mode,
+            decision = ?decision, "tool authorization");
         match decision {
             security::Decision::Allow => {},
             security::Decision::Deny => anyhow::bail!("Tool denied by permission mode; change permissions in Desktop settings if intended"),
             security::Decision::Ask => {
                 let request = serde_json::json!({"tool": tool_name, "arguments": &arguments,
                     "workspace": self.config.security.workspace_root,
-                    "isolation": plan.isolation, "target": plan.file, "reason": plan.reason});
+                    "isolation": plan.isolation, "target": plan.file, "reason": plan.reason, "livePermissionMode": live_permission_mode});
                 let request = serde_json::to_string(&request)?;
                 anyhow::ensure!(request.len() <= 16000, "Approval request too large; split the operation");
                 let approved = self.client_handler.handle_client_command("security-approve", &request, scene_id).await;
@@ -694,7 +705,6 @@ impl ToolHost {
             }
         }
         // Capabilities are local to this invocation and never mutate the shared host.
-        let mut invocation_config = self.config.clone();
         let mut arguments = arguments;
         if let Some(target) = plan.file {
             arguments["path"] = serde_json::to_value(&target)?;
@@ -708,7 +718,7 @@ impl ToolHost {
                 arguments.is_null() || arguments.as_object().is_some_and(|args| args.is_empty()),
                 "portal_status takes no arguments"
             );
-            return self.handle_status().await;
+            return self.handle_status(&invocation_config).await;
         }
         // The Portal management namespace can never be replaced by community tools.
         if !tool_name.replace('-', "_").starts_with("portal_") {
@@ -762,7 +772,7 @@ impl ToolHost {
                 if !self.config.tools.screenshot {
                     anyhow::bail!("portal_screenshot is disabled in configuration");
                 }
-                screenshot::capture(&self.config, arguments).await
+                screenshot::capture(&invocation_config, arguments).await
             }
             "portal_search" => search::search(&invocation_config, arguments).await,
             "portal_web_fetch" => web::fetch(arguments).await,

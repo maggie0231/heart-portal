@@ -579,11 +579,16 @@ async fn main() -> Result<()> {
         connect_link.as_deref(),
     ) {
         if let Ok(mut endpoint) = url::Url::parse(link) {
+            let policy_key = if std::env::var("HEART_PORTAL_CLIENT_MANAGED").as_deref() == Ok("1") {
+                endpoint.query_pairs().find(|(key, token)| key == "token" && !token.is_empty())
+                    .map(|(_, token)| ring::hmac::Key::new(ring::hmac::HMAC_SHA256, token.as_bytes()))
+            } else { None };
             endpoint.set_query(None);
             endpoint.set_fragment(None);
             tool_host = tool_host.with_client_handler(std::sync::Arc::new(
                 tools::client::DesktopClientHandler {
                     file: file.into(),
+                    policy_key,
                     endpoint: endpoint.as_str().trim_end_matches('/').to_string(),
                 },
             ));

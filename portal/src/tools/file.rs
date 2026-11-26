@@ -1,7 +1,7 @@
 //! File tools — read, write, list.
 
 use crate::config::PortalConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -252,7 +252,21 @@ pub(crate) fn authorize_write(config: &PortalConfig, path: &Path) -> Result<()> 
     use crate::config::PermissionMode;
     if config.security.permission_mode == PermissionMode::FullAccess { return Ok(()); }
     anyhow::ensure!(config.security.permission_mode != PermissionMode::ReadOnly, "Read-only permission mode");
-    if config.security.approved_file.as_deref() == Some(path) { return Ok(()); }
+    if config.security.approved_file.as_deref() == Some(path) {
+        // A single-file consent must not replace Desktop's policy, including
+        // restoring a previously valid full-access decision.
+        if let Some(registration) = std::env::var_os("HEART_PORTAL_CLIENT_FILE") {
+            let profile = Path::new(&registration).parent().context("Missing Desktop profile directory")?;
+            for name in ["connection.json", "connection.json.tmp"] {
+                let in_profile = path.ancestors().any(|part|
+                    part.file_name().is_some_and(|leaf| leaf.to_string_lossy().eq_ignore_ascii_case(name))
+                    && part.parent().is_some_and(|parent| same_file::is_same_file(parent, profile).unwrap_or(false)));
+                anyhow::ensure!(!in_profile && !same_file::is_same_file(path, profile.join(name)).unwrap_or(false),
+                    "Change Desktop permissions through the Desktop settings");
+            }
+        }
+        return Ok(());
+    }
     let root = canonical_workspace_root(config)?;
     let relative = path.strip_prefix(&root)?;
     for part in relative.components() {

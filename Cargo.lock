@@ -530,6 +530,8 @@ dependencies = [
  "rand 0.9.5",
  "regex",
  "reqwest",
+ "ring",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",

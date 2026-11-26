@@ -132,9 +132,8 @@ impl ToolHost {
             .store(state as u8, Ordering::Relaxed);
     }
 
-    pub(super) async fn handle_status(&self) -> Result<Value> {
+    pub(super) async fn handle_status(&self, config: &PortalConfig) -> Result<Value> {
         let runtime = &self.runtime;
-        let config = &self.config;
         let details = config.security.expose_host_details;
         let task_environment = match crate::task_environment::bundled_runtime() {
             Ok(Some(runtime)) => json!({
@@ -209,7 +208,7 @@ impl ToolHost {
                     "explicit_reload_changes": ["code", "dependencies"],
                     "restarts_portal": false,
                     "activation": "next-tool-call",
-                    "eager_prewarm": if config.security.permission_mode == crate::config::PermissionMode::FullAccess { "portal-startup" } else { "disabled-until-approved-call" },
+                    "eager_prewarm": if self.config.security.permission_mode == crate::config::PermissionMode::FullAccess { "portal-startup" } else { "disabled-until-approved-call" },
                 },
                 "tools_reload": {
                     "tool": "portal_tools_reload",
@@ -259,7 +258,7 @@ impl ToolHost {
                     _ => "ordinary-reads; every-write-and-copy-requires-approval",
                 },
                 "approval_reviewer": "user",
-                "custom_mcp_startup": if config.security.permission_mode == crate::config::PermissionMode::FullAccess { "automatic" } else { "explicit-tools-reload-approval-required" },
+                "custom_mcp_startup": if self.config.security.permission_mode == crate::config::PermissionMode::FullAccess { "automatic" } else { "explicit-tools-reload-approval-required" },
                 "subagent_tools": "portal-broker-in-restricted-mode",
                 "approval_scope": "single-call",
             },

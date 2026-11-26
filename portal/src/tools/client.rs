@@ -1,5 +1,7 @@
 //! Client commands are data requests, never shell commands.
 use anyhow::{Context, Result};
+use base64::Engine as _;
+use crate::config::PermissionMode;
 use std::{future::Future, path::PathBuf, pin::Pin};
 
 // Reserve only the desktop protocol verbs. Other @ prefixes are shell syntax
@@ -11,6 +13,9 @@ pub fn parse_command(command: &str) -> Option<(&str, &str)> {
 }
 
 pub trait ClientHandler: Send + Sync {
+    fn live_permission_mode(&self) -> Pin<Box<dyn Future<Output = Option<PermissionMode>> + Send + '_>> {
+        Box::pin(async { None })
+    }
     fn handle_client_command<'a>(
         &'a self,
         verb: &'a str,
@@ -36,8 +41,38 @@ impl ClientHandler for NoClientHandler {
 pub struct DesktopClientHandler {
     pub file: PathBuf,
     pub endpoint: String,
+    pub policy_key: Option<ring::hmac::Key>,
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPolicy {
+    version: u8,
+    settings: PolicySettings,
+    full_access_proof: Option<String>,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicySettings { endpoint: String, permission_mode: String }
+
 impl ClientHandler for DesktopClientHandler {
+    fn live_permission_mode(&self) -> Pin<Box<dyn Future<Output = Option<PermissionMode>> + Send + '_>> {
+        Box::pin(async move {
+            let key = self.policy_key.as_ref()?;
+            // Desktop atomically replaces this protected file on commit. Reading
+            // it also works for a background engine after Desktop has quit.
+            let file = self.file.with_file_name("connection.json");
+            let saved = tokio::task::spawn_blocking(move || {
+                let reader = std::io::BufReader::new(std::fs::File::open(file).ok()?);
+                serde_json::from_reader::<_, SavedPolicy>(reader).ok()
+            }).await.ok().flatten();
+            let full_access = saved.filter(|p| p.version == 1 && p.settings.endpoint == self.endpoint
+                && p.settings.permission_mode == "full-access").and_then(|p| p.full_access_proof)
+                .and_then(|signature| base64::engine::general_purpose::STANDARD.decode(signature).ok())
+                .is_some_and(|proof| ring::hmac::verify(key,
+                    format!("portal-desktop/full-access/{}", self.endpoint).as_bytes(), &proof).is_ok());
+            Some(if full_access { PermissionMode::FullAccess } else { PermissionMode::Supervised })
+        })
+    }
     fn handle_client_command<'a>(
         &'a self,
         verb: &'a str,
@@ -190,7 +225,7 @@ mod tests {
         });
         let file = std::env::temp_dir().join(format!("portal-approval-{}.json", uuid::Uuid::new_v4()));
         tokio::fs::write(&file, json!({"port":port,"token":"fixture"}).to_string()).await.unwrap();
-        let handler = Arc::new(DesktopClientHandler { file: file.clone(), endpoint: "https://fixture.test/a".into() });
+        let handler = Arc::new(DesktopClientHandler { file: file.clone(), endpoint: "https://fixture.test/a".into(), policy_key: None });
         let first_handler = handler.clone();
         let first = tokio::spawn(async move { first_handler.handle_client_command("security-approve", "{}", None).await });
         assert_eq!(requests.recv().await.unwrap(), "security-approve");
@@ -229,6 +264,7 @@ mod tests {
         .await
         .unwrap();
         let handler = DesktopClientHandler {
+            policy_key: None,
             file: file.clone(),
             endpoint: "https://fixture.test/a".into(),
         };
